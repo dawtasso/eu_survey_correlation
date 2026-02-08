@@ -9,8 +9,8 @@ Usage:
 
 import argparse
 
+from eu_survey_correlation.surveys.eurobarometer_scraper import EurobarometerScraper
 from loguru import logger
-from src.surveys.eurobarometer_scraper import EurobarometerScraper
 
 
 def main():
@@ -31,7 +31,7 @@ def main():
         "--output",
         "-o",
         type=str,
-        default="survey_dataset_urls.json",
+        default="./data/survey_dataset_urls.json",
         help="Output JSON file (default: survey_dataset_urls.json)",
     )
     parser.add_argument(
