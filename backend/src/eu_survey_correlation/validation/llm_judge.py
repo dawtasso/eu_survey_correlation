@@ -2,6 +2,7 @@
 
 import json
 import re
+from pathlib import Path
 
 import ollama
 import pandas as pd
@@ -107,6 +108,8 @@ class MatchJudge:
         df: pd.DataFrame,
         question_col: str = "question_text",
         summary_col: str = "vote_summary",
+        output_path: str | Path | None = None,
+        already_judged: pd.DataFrame | None = None,
     ) -> pd.DataFrame:
         """
         Judge all pairs in a DataFrame.
@@ -117,30 +120,52 @@ class MatchJudge:
             df: DataFrame with match pairs.
             question_col: Column name for survey question text.
             summary_col: Column name for vote summary text.
+            output_path: If provided, save results to this CSV after each judgment.
+            already_judged: DataFrame of previously judged pairs to prepend to output.
 
         Returns:
             Copy of df with added LLM judgment columns.
         """
-        results = []
         logger.info(f"Judging {len(df)} match pairs with '{self.model}'...")
 
-        for _, row in tqdm(df.iterrows(), total=len(df), desc="Judging pairs"):
+        # Prepare output path
+        if output_path:
+            output_path = Path(output_path)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Initialize results list with already judged pairs
+        judged_rows = []
+        if already_judged is not None and not already_judged.empty:
+            judged_rows = already_judged.to_dict("records")
+
+        df_reset = df.reset_index(drop=True)
+
+        for idx, row in tqdm(
+            df_reset.iterrows(), total=len(df_reset), desc="Judging pairs"
+        ):
             judgment = self.judge_pair(
                 question_text=str(row[question_col]),
                 vote_summary=str(row[summary_col]),
             )
-            results.append(judgment)
 
-        judgments_df = pd.DataFrame(results)
-        result_df = df.copy().reset_index(drop=True)
-        result_df["llm_score"] = judgments_df["score"]
-        result_df["llm_explanation"] = judgments_df["explanation"]
-        result_df["llm_go"] = judgments_df["go"]
+            # Create row with judgment columns
+            row_dict = row.to_dict()
+            row_dict["llm_score"] = judgment["score"]
+            row_dict["llm_explanation"] = judgment["explanation"]
+            row_dict["llm_go"] = judgment["go"]
+            judged_rows.append(row_dict)
 
-        n_go = result_df["llm_go"].sum()
+            # Save incrementally after each judgment
+            if output_path:
+                pd.DataFrame(judged_rows).to_csv(output_path, index=False)
+
+        result_df = pd.DataFrame(judged_rows)
+
+        # Filter to only newly judged rows for stats
+        new_judgments = result_df.tail(len(df_reset))
+        n_go = new_judgments["llm_go"].sum()
         logger.success(
-            f"Judging complete: {n_go}/{len(result_df)} pairs marked as 'go' "
-            f"(avg score: {result_df['llm_score'].mean():.1f})"
+            f"Judging complete: {n_go}/{len(new_judgments)} pairs marked as 'go' "
+            f"(avg score: {new_judgments['llm_score'].mean():.1f})"
         )
         return result_df
-

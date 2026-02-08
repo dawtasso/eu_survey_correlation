@@ -10,9 +10,8 @@ import argparse
 from pathlib import Path
 
 import pandas as pd
-from loguru import logger
-
 from eu_survey_correlation.validation import MatchJudge
+from loguru import logger
 
 DATA_DIR = Path("data")
 MATCHES_CSV = DATA_DIR / "matches" / "survey_vote_matches.csv"
@@ -50,13 +49,9 @@ def main():
         logger.info(f"Resuming: {len(already_judged)} pairs already judged")
 
         # Build a set of already-judged (question_id, vote_id) pairs
-        judged_keys = set(
-            zip(already_judged["question_id"], already_judged["vote_id"])
-        )
+        judged_keys = set(zip(already_judged["question_id"], already_judged["vote_id"]))
         df = df[
-            ~df.apply(
-                lambda r: (r["question_id"], r["vote_id"]) in judged_keys, axis=1
-            )
+            ~df.apply(lambda r: (r["question_id"], r["vote_id"]) in judged_keys, axis=1)
         ]
         logger.info(f"Remaining pairs to judge: {len(df)}")
 
@@ -69,17 +64,15 @@ def main():
         return
 
     judge = MatchJudge(model=args.model)
-    judged_df = judge.judge_dataframe(df)
+    # Pass output_path to save incrementally after each judgment
+    judged_df = judge.judge_dataframe(
+        df,
+        output_path=OUTPUT_CSV,
+        already_judged=already_judged if not already_judged.empty else None,
+    )
 
-    # Concatenate with previously judged pairs if resuming
-    if not already_judged.empty:
-        judged_df = pd.concat([already_judged, judged_df], ignore_index=True)
-
-    OUTPUT_CSV.parent.mkdir(parents=True, exist_ok=True)
-    judged_df.to_csv(OUTPUT_CSV, index=False)
     logger.success(f"Saved {len(judged_df)} judged pairs → {OUTPUT_CSV}")
 
 
 if __name__ == "__main__":
     main()
-
