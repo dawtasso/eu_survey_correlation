@@ -1,0 +1,28 @@
+# ignore cache files
+*.pyc
+*.pyo
+*.pyd
+*.pyw
+*.pyz
+*.pywz
+*.pyzz
+*.pywzz
+*.pyzzz
+*.pywzzz
+*.pyzzzz
+*.pywzzzz
+*.pycache
+
+
+# ignore mac cache
+.DS_Store
+
+# ignore venv
+.venv
+
+
+# ignore pycache
+__pycache__/
+
+# ignore env
+.env
