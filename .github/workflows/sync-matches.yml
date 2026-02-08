@@ -1,0 +1,52 @@
+name: Sync Matches to Website
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'data/matches/survey_vote_matches_judged.csv'
+  workflow_dispatch: # Allow manual trigger
+
+jobs:
+  sync-matches:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout EU Survey Repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install pandas
+
+      - name: Transform CSV to JSON
+        run: |
+          python backend/scripts/export_matches_json.py
+
+      - name: Checkout Website Repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ secrets.WEBSITE_REPO }}
+          token: ${{ secrets.WEBSITE_REPO_PAT }}
+          path: website
+
+      - name: Copy matches.json to Website Repo
+        run: |
+          mkdir -p website/data
+          cp data/matches/matches.json website/data/matches.json
+
+      - name: Commit and Push to Website Repo
+        run: |
+          cd website
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/matches.json
+          git diff --staged --quiet || git commit -m "Update matches.json from EU Survey pipeline"
+          git push
+
