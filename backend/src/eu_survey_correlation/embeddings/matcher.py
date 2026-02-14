@@ -1,5 +1,6 @@
 """Compute cosine similarity between survey and vote embeddings and extract top-k matches."""
 
+import hashlib
 from pathlib import Path
 
 import numpy as np
@@ -104,7 +105,7 @@ class VoteSurveyMatcher:
                             "question_text": survey_row.get("question_en", ""),
                             "file_name": survey_row.get("file_name", ""),
                             "vote_id": vote_row.get("vote_id", ""),
-                            "vote_summary": str(vote_row.get("summary", ""))[:500],
+                            "vote_summary": str(vote_row.get("summary", "")),
                             "similarity_score": float(scores[vote_idx]),
                         }
                     )
@@ -113,6 +114,15 @@ class VoteSurveyMatcher:
         if not matches_df.empty:
             matches_df = matches_df.sort_values("similarity_score", ascending=False)
 
+        matches_df = matches_df.rename(columns={"question_id": "question_index"})
+        matches_df["question_id"] = matches_df["question_text"].apply(
+            lambda x: hashlib.sha256(x.encode()).hexdigest()
+        )
+        matches_df["match_id"] = (
+            matches_df["question_id"] + "_" + matches_df["vote_id"].astype(str)
+        )
+        # Drop duplicate matches (same question_text + vote_id pair)
+        matches_df = matches_df.drop_duplicates(subset=["match_id"], keep="first")
         logger.info(f"Found {len(matches_df)} matches above threshold {threshold}")
         return matches_df
 

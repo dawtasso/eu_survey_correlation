@@ -23,6 +23,9 @@ dependencies = [
     "pyarrow>=23.0.0",
     "matplotlib>=3.10.8",
     "ollama>=0.4.0",
+    "xgboost>=2.0.0",
+    "scikit-learn>=1.4.0",
+    "streamlit>=1.30.0",
 ]
 
 [tool.hatch.build.targets.wheel]
