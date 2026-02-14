@@ -15,6 +15,16 @@ import pandas as pd
 from loguru import logger
 from tqdm import tqdm
 
+from eu_survey_correlation.classification.dates import (
+    build_survey_date_map as _build_survey_date_map,
+)
+from eu_survey_correlation.classification.dates import (
+    build_vote_date_map as _build_vote_date_map,
+)
+from eu_survey_correlation.classification.dates import (
+    get_survey_date as _get_survey_date,
+)
+
 DEFAULT_MODEL = "mistral"
 
 LABELING_PROMPT = """\
@@ -171,52 +181,6 @@ def label_pair(
     }
 
 
-def _build_survey_date_map(metadata_path: Path) -> dict[str, pd.Timestamp]:
-    """Build a mapping from Eurobarometer edition number to publication date."""
-    import json
-    import re
-
-    with open(metadata_path) as f:
-        meta = json.load(f)
-
-    edition_dates: dict[str, str] = {}
-    for m in meta:
-        if "issued" not in m:
-            continue
-        desc = m.get("description", {}).get("en", "")
-        issued = m["issued"][:10]
-        for match in re.finditer(
-            r"(?:FLASH|FL|EB|EBS|SP)\D?(\d{2,4})", desc, re.IGNORECASE
-        ):
-            num = match.group(1)
-            if num not in edition_dates or issued > edition_dates[num]:
-                edition_dates[num] = issued
-
-    return {k: pd.Timestamp(v) for k, v in edition_dates.items()}
-
-
-def _get_survey_date(file_name: str, edition_dates: dict[str, pd.Timestamp]):
-    """Extract survey date from file_name by matching edition number."""
-    import re
-
-    for match in re.finditer(
-        r"(?:fl|eb|ebs|SP)\D?(\d{2,4})", file_name, re.IGNORECASE
-    ):
-        num = match.group(1)
-        if num in edition_dates:
-            return edition_dates[num]
-    return pd.NaT
-
-
-def _build_vote_date_map(votes_csv_path: Path) -> dict[str, pd.Timestamp]:
-    """Build a mapping from vote_id to vote date."""
-    votes = pd.read_csv(votes_csv_path)
-    votes["date"] = pd.to_datetime(
-        votes["timestamp"], format="%d/%m/%Y %H:%M", errors="coerce"
-    )
-    return dict(zip(votes["id"].astype(str), votes["date"]))
-
-
 def sample_training_pairs(
     matches_path: Path,
     survey_embeddings_path: Path,
@@ -290,8 +254,8 @@ def sample_training_pairs(
         "how effective",
     ]
     opinion_pattern = "|".join(opinion_keywords)
-    is_opinion = matches_df["question_text"].str.lower().str.contains(
-        opinion_pattern, na=False
+    is_opinion = (
+        matches_df["question_text"].str.lower().str.contains(opinion_pattern, na=False)
     )
     n_before_opinion = len(matches_df)
     matches_df = matches_df[is_opinion].copy()
@@ -327,9 +291,7 @@ def sample_training_pairs(
     survey_embs = survey_embs / (
         np.linalg.norm(survey_embs, axis=1, keepdims=True) + 1e-9
     )
-    vote_embs = vote_embs / (
-        np.linalg.norm(vote_embs, axis=1, keepdims=True) + 1e-9
-    )
+    vote_embs = vote_embs / (np.linalg.norm(vote_embs, axis=1, keepdims=True) + 1e-9)
 
     # --- Hard negatives: pairs with similarity between 0.35 and 0.50 ---
     n_hard = n_negative // 2
@@ -382,9 +344,7 @@ def sample_training_pairs(
 
     # Combine all
     result = pd.concat([pos_sample, hard_neg_df, random_neg_df], ignore_index=True)
-    result = result.drop_duplicates(
-        subset=["question_text", "vote_id"], keep="first"
-    )
+    result = result.drop_duplicates(subset=["question_text", "vote_id"], keep="first")
     logger.info(f"Total sampled pairs: {len(result)}")
     return result
 
@@ -408,9 +368,7 @@ def label_dataframe(
     if already_labeled is not None and not already_labeled.empty:
         labeled_rows = already_labeled.to_dict("records")
 
-    for idx, row in tqdm(
-        df.iterrows(), total=len(df), desc="Labeling pairs"
-    ):
+    for idx, row in tqdm(df.iterrows(), total=len(df), desc="Labeling pairs"):
         result = label_pair(
             question_text=str(row["question_text"]),
             vote_summary=str(row["vote_summary"]),

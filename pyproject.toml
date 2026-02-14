@@ -26,6 +26,7 @@ dependencies = [
     "xgboost>=2.0.0",
     "scikit-learn>=1.4.0",
     "streamlit>=1.30.0",
+    "plotly>=5.18.0",
 ]
 
 [tool.hatch.build.targets.wheel]
