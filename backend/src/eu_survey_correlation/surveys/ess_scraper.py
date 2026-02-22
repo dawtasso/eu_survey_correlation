@@ -57,10 +57,3 @@ class ESSCodebookParser:
                     )
 
         return pd.DataFrame(rows)
-
-
-if __name__ == "__main__":
-    parser = ESSCodebookParser("data/surveys/ess/ESS8e02_3 codebook.html")
-    df = parser.parse()
-    print(df.head(20))
-    print(f"\n{len(df)} rows, {df['variable_id'].nunique()} variables")
