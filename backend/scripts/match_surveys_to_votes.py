@@ -21,13 +21,13 @@ from loguru import logger
 from tqdm import tqdm
 
 DATA_DIR = Path("data")
-SURVEY_CLEAN_CSV = DATA_DIR / "surveys" / "filtered_survey_questions_clean.csv"
+SURVEY_CLEAN_CSV = DATA_DIR / "surveys" / "simplified_michlou_survey_tri.csv"
 SURVEY_EMB = DATA_DIR / "embeddings" / "survey_embeddings.parquet"
 VOTE_EMB = DATA_DIR / "embeddings" / "vote_embeddings.parquet"
 VOTES_CSV = DATA_DIR / "votes" / "votes.csv"
 VOTE_SUMMARIES_CSV = DATA_DIR / "votes" / "vote_summaries.csv"
 DISTRIBUTIONS_META = DATA_DIR / "surveys" / "distributions_metadata.json"
-OUTPUT_CSV = DATA_DIR / "matches" / "survey_vote_matches_clean.csv"
+OUTPUT_CSV = DATA_DIR / "matches" / "simplified_michlou_survey_vote_matches_clean.csv"
 
 MODEL = "mistral"
 
@@ -109,9 +109,7 @@ def resolve_survey_date(file_name: str, date_mapping: dict[str, str]) -> str | N
                     return date
 
         # Try extracting year from filename
-        year_match = re.search(
-            r"(20\d{2})", file_name
-        )
+        year_match = re.search(r"(20\d{2})", file_name)
         if year_match:
             return f"{year_match.group(1)}-06-01"  # approximate mid-year
 
@@ -159,7 +157,9 @@ def main():
     parser = argparse.ArgumentParser(
         description="Match survey questions to parliament votes"
     )
-    parser.add_argument("--top-k", type=int, default=3, help="Top-k matches per question")
+    parser.add_argument(
+        "--top-k", type=int, default=3, help="Top-k matches per question"
+    )
     parser.add_argument(
         "--threshold", type=float, default=0.50, help="Min cosine similarity"
     )
@@ -216,9 +216,7 @@ def main():
     vote_id_to_emb_idx = {
         vid: idx for idx, vid in enumerate(vote_emb_df["vote_id"].values)
     }
-    vote_id_to_summary = dict(
-        zip(vote_summaries["vote_id"], vote_summaries["summary"])
-    )
+    vote_id_to_summary = dict(zip(vote_summaries["vote_id"], vote_summaries["summary"]))
 
     # 5. Compute matches with temporal filtering
     logger.info(
