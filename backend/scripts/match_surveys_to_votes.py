@@ -168,6 +168,10 @@ def main():
     # 1. Load survey questions (with clean text)
     logger.info("Loading clean survey questions...")
     surveys = pd.read_csv(SURVEY_CLEAN_CSV)
+    before = len(surveys)
+    surveys = surveys.drop_duplicates(subset=["question_en"]).copy()
+    if len(surveys) < before:
+        logger.info(f"Dropped {before - len(surveys)} duplicate question_en rows")
     logger.info(f"Loaded {len(surveys)} survey questions")
 
     # 2. Build survey date mapping
@@ -202,20 +206,21 @@ def main():
     survey_emb_df = pd.read_parquet(SURVEY_EMB)
     vote_emb_df = pd.read_parquet(VOTE_EMB)
 
+    # Deduplicate embeddings on sheet_id
+    survey_emb_df = survey_emb_df.drop_duplicates(subset=["sheet_id"]).reset_index(drop=True)
+
+    # Validate: all survey questions must have embeddings
+    survey_ids_in_emb = set(survey_emb_df["sheet_id"].values)
+    missing = [sid for sid in surveys["sheet_id"].values if sid not in survey_ids_in_emb]
+    if missing:
+        logger.warning(f"{len(missing)} survey questions have no embedding and will be skipped: {missing[:10]}")
+
     survey_emb = _extract_embeddings(survey_emb_df)
     vote_emb = _extract_embeddings(vote_emb_df)
 
     # Normalize
     survey_emb = survey_emb / (np.linalg.norm(survey_emb, axis=1, keepdims=True) + 1e-9)
     vote_emb = vote_emb / (np.linalg.norm(vote_emb, axis=1, keepdims=True) + 1e-9)
-
-    # Build index maps
-    survey_id_to_emb_idx = {
-        sid: idx for idx, sid in enumerate(survey_emb_df["sheet_id"].values)
-    }
-    vote_id_to_emb_idx = {
-        vid: idx for idx, vid in enumerate(vote_emb_df["vote_id"].values)
-    }
     vote_id_to_summary = dict(zip(vote_summaries["vote_id"], vote_summaries["summary"]))
 
     # 5. Compute matches with temporal filtering
@@ -223,6 +228,7 @@ def main():
         f"Computing matches (top_k={args.top_k}, threshold={args.threshold})..."
     )
     rows = []
+    questions_below_topk = 0
     batch_size = 256
 
     # Get the set of survey sheet_ids we're working with
@@ -244,7 +250,6 @@ def main():
                 continue
 
             survey_row = survey_lookup.loc[sheet_id]
-            # Handle duplicate sheet_ids (take first)
             if isinstance(survey_row, pd.DataFrame):
                 survey_row = survey_row.iloc[0]
 
@@ -261,17 +266,16 @@ def main():
             top_indices = top_indices[scores[top_indices] >= args.threshold]
             top_indices = top_indices[np.argsort(scores[top_indices])[::-1]]
 
+            question_rows = []
             for vote_idx in top_indices:
                 vote_id = int(vote_emb_df.iloc[vote_idx]["vote_id"])
                 vote_date = vote_date_map.get(vote_id)
 
                 # Temporal filter: survey must be published BEFORE the vote
-                if vote_date is None or pd.isna(vote_date):
-                    continue
-                if survey_date >= vote_date:
+                if vote_date is None or pd.isna(vote_date) or survey_date >= vote_date:
                     continue
 
-                rows.append(
+                question_rows.append(
                     {
                         "question_id": sheet_id,
                         "question_clean": survey_row.get("question_clean", ""),
@@ -287,6 +291,10 @@ def main():
                         "similarity_score": float(scores[vote_idx]),
                     }
                 )
+
+            if len(question_rows) < args.top_k:
+                questions_below_topk += 1
+            rows.extend(question_rows)
 
     matches_df = pd.DataFrame(rows)
     if matches_df.empty:
