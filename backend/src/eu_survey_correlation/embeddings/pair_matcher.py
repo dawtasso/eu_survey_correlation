@@ -50,13 +50,28 @@ class PairMatcher:
             f"(dim={self.survey_emb.shape[1]})"
         )
 
+    def _is_vote_after_survey(self, survey_row: pd.Series, vote_row: pd.Series) -> bool:
+        """Return True if vote_date is strictly after survey_date."""
+        if "survey_date" not in self.survey_meta_cols or "vote_date" not in self.vote_meta_cols:
+            return True
+        survey_date = survey_row.get("survey_date")
+        vote_date = vote_row.get("vote_date")
+        if survey_date is None or vote_date is None or pd.isna(survey_date) or pd.isna(vote_date):
+            return False
+        return vote_date > survey_date
+
     def match(
         self,
         top_k: int = 5,
         threshold: float = 0.5,
         batch_size: int = 256,
+        vote_after_survey: bool = True,
     ) -> pd.DataFrame:
         """For each survey question, find the top-k most similar votes.
+
+        When ``vote_after_survey=True``, only votes dated after the survey are
+        considered, but the full ``top_k`` candidates are still selected from
+        that filtered pool.
 
         Returns a DataFrame containing all survey metadata columns, all vote
         metadata columns (prefixed with ``vote_`` if collision), and a
@@ -64,7 +79,7 @@ class PairMatcher:
         """
         logger.info(
             f"Computing matches (top_k={top_k}, threshold={threshold}, "
-            f"batch_size={batch_size})..."
+            f"batch_size={batch_size}, vote_after_survey={vote_after_survey})..."
         )
         rows: list[dict] = []
         n_surveys = self.survey_emb.shape[0]
@@ -79,16 +94,27 @@ class PairMatcher:
             for i in range(sims.shape[0]):
                 survey_idx = start + i
                 scores = sims[i]
-
-                if top_k < len(scores):
-                    top_indices = np.argpartition(scores, -top_k)[-top_k:]
-                else:
-                    top_indices = np.arange(len(scores))
-
-                top_indices = top_indices[scores[top_indices] >= threshold]
-                top_indices = top_indices[np.argsort(scores[top_indices])[::-1]]
-
                 survey_row = self.survey_df.iloc[survey_idx]
+
+                # Build candidate mask: threshold + optional date filter
+                candidate_mask = scores >= threshold
+                if vote_after_survey:
+                    date_mask = np.array([
+                        self._is_vote_after_survey(survey_row, self.vote_df.iloc[j])
+                        for j in range(len(scores))
+                    ])
+                    candidate_mask = candidate_mask & date_mask
+
+                candidate_indices = np.where(candidate_mask)[0]
+
+                # Keep top_k by score from the filtered candidates
+                if len(candidate_indices) > top_k:
+                    top_scores = scores[candidate_indices]
+                    top_indices = candidate_indices[np.argpartition(top_scores, -top_k)[-top_k:]]
+                else:
+                    top_indices = candidate_indices
+
+                top_indices = top_indices[np.argsort(scores[top_indices])[::-1]]
 
                 for vote_idx in top_indices:
                     vote_row = self.vote_df.iloc[vote_idx]
