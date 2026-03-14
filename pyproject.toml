@@ -24,6 +24,7 @@ dependencies = [
     "matplotlib>=3.10.8",
     "ollama>=0.4.0",
     "nest-asyncio>=1.6.0",
+    "seaborn>=0.13.2",
 ]
 
 [tool.hatch.build.targets.wheel]
