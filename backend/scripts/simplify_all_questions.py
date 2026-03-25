@@ -20,7 +20,7 @@ SIMPLIFIER_CACHE = DATA_DIR / "cache" / "simplified_text.json"
 
 def process_and_simplify():
     # 1. Load the JSONL into a list of dicts
-    df = pd.read_csv(SURVEY_QUESTIONS_FILE)[:5]
+    df = pd.read_csv(SURVEY_QUESTIONS_FILE)
     # 2. Initialize your Simplifier
     # M1 Pro hint: Mistral is great, but 'phi3' or 'llama3' are also very fast on Apple Silicon
     simplifier = Simplifier(model="mistral", cache_path=SIMPLIFIER_CACHE)
