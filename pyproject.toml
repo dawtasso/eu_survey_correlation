@@ -31,6 +31,9 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0.0",
+    "scikit-learn>=1.4.0",
+    "xgboost>=2.0.0",
+    "datasets>=2.0.0",
 ]
 
 [tool.pytest.ini_options]

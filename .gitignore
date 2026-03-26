@@ -29,3 +29,6 @@ __pycache__/
 
 # migration backups (contain Supabase data)
 data/migration/
+
+# classifier artifacts (trained models, figures)
+data/classifier/
