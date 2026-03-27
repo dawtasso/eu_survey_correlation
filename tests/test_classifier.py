@@ -9,10 +9,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-import sys
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend" / "scripts"))
-from train_classifier import (
+from eu_survey_correlation.classifier import (
     build_feature_matrix,
     compute_features,
     find_best_threshold,

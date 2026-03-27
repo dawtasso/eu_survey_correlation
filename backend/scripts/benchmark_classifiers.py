@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 import time
 from pathlib import Path
 
@@ -37,9 +36,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from xgboost import XGBClassifier
 
-# Import shared code from train_classifier
-sys.path.insert(0, str(Path(__file__).parent))
-from train_classifier import (
+from eu_survey_correlation.classifier import (
     DATA,
     FIGURES_DIR,
     OUTPUT_DIR,

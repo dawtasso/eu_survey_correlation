@@ -1,5 +1,5 @@
 """
-Score survey↔vote match pairs using the trained classifier.
+Score survey<->vote match pairs using the trained classifier.
 
 Usage:
     uv run python backend/scripts/score_matches.py data/matches/simplified_michlou_survey_vote_matches_clean.csv
@@ -10,17 +10,14 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 from pathlib import Path
 
 import joblib
 import numpy as np
 import pandas as pd
 
-# Import feature engineering from training script
-sys.path.insert(0, str(Path(__file__).parent))
-from train_classifier import (
-    EMBEDDING_CACHE,
+from eu_survey_correlation.classifier import (
+    DATA,
     MIGRATION_DIR,
     OUTPUT_DIR,
     build_feature_matrix,
@@ -29,11 +26,10 @@ from train_classifier import (
 )
 
 ROOT = Path(__file__).resolve().parents[2]
-DATA = ROOT / "data"
 
 
-def load_model() -> tuple[object, float, str]:
-    """Load trained model, threshold, and model type."""
+def load_model() -> tuple[object, float, str, list[str] | None]:
+    """Load trained model, threshold, model type, and optional selected features."""
     model_path = OUTPUT_DIR / "model.joblib"
     threshold_path = OUTPUT_DIR / "threshold.json"
 
@@ -46,13 +42,15 @@ def load_model() -> tuple[object, float, str]:
 
     threshold = 0.5
     model_type = "lr"
+    selected_features = None
     if threshold_path.exists():
         with open(threshold_path) as f:
             meta = json.load(f)
             threshold = meta["threshold"]
             model_type = meta.get("model_type", "lr")
+            selected_features = meta.get("selected_features")
 
-    return model, threshold, model_type
+    return model, threshold, model_type, selected_features
 
 
 def _append_ce_scores(X: np.ndarray, records: list[dict], cache_name: str) -> np.ndarray:
@@ -62,8 +60,17 @@ def _append_ce_scores(X: np.ndarray, records: list[dict], cache_name: str) -> np
     return np.column_stack([X, ce_scores])
 
 
+def _select_features(X: np.ndarray, feature_names: list[str], selected: list[str] | None) -> np.ndarray:
+    """Slice feature matrix to selected features if specified."""
+    if selected is None:
+        return X
+    indices = [feature_names.index(f) for f in selected if f in feature_names]
+    return X[:, indices]
+
+
 def score_csv(
-    csv_path: Path, model, threshold: float, emb_lookup: dict, model_type: str = "lr"
+    csv_path: Path, model, threshold: float, emb_lookup: dict,
+    model_type: str = "lr", selected_features: list[str] | None = None,
 ) -> pd.DataFrame:
     """Score matches from a CSV file."""
     df = pd.read_csv(csv_path)
@@ -79,11 +86,15 @@ def score_csv(
             "days_between": row.get("time_delta", 0),
         })
 
-    X = build_feature_matrix(records, emb_lookup).values.astype(np.float64)
+    feature_df = build_feature_matrix(records, emb_lookup)
+    feature_names = list(feature_df.columns)
+    X = feature_df.values.astype(np.float64)
     X = np.nan_to_num(X, nan=0.0)
 
     if model_type == "hybrid":
         X = _append_ce_scores(X, records, "cross_encoder_scores_csv.npy")
+
+    X = _select_features(X, feature_names, selected_features)
 
     probs = model.predict_proba(X)[:, 1]
     df["predicted_quality"] = probs
@@ -93,7 +104,8 @@ def score_csv(
 
 
 def score_unlabelled(
-    model, threshold: float, emb_lookup: dict, model_type: str = "lr"
+    model, threshold: float, emb_lookup: dict,
+    model_type: str = "lr", selected_features: list[str] | None = None,
 ) -> list[dict]:
     """Score unlabelled pairs from migration backup and rank by uncertainty."""
     backup_files = sorted(MIGRATION_DIR.glob("survey_vote_matches_backup_*.json"))
@@ -108,11 +120,15 @@ def score_unlabelled(
         print("No unlabelled pairs found.")
         return []
 
-    X = build_feature_matrix(unlabelled, emb_lookup).values.astype(np.float64)
+    feature_df = build_feature_matrix(unlabelled, emb_lookup)
+    feature_names = list(feature_df.columns)
+    X = feature_df.values.astype(np.float64)
     X = np.nan_to_num(X, nan=0.0)
 
     if model_type == "hybrid":
         X = _append_ce_scores(X, unlabelled, "cross_encoder_scores_unlabelled.npy")
+
+    X = _select_features(X, feature_names, selected_features)
 
     probs = model.predict_proba(X)[:, 1]
 
@@ -137,16 +153,18 @@ def main() -> None:
     if not args.csv_path and not args.unlabelled:
         parser.error("Provide a CSV path or --unlabelled")
 
-    model, threshold, model_type = load_model()
+    model, threshold, model_type, selected_features = load_model()
     emb_lookup = load_embedding_lookup()
     print(f"Model type: {model_type}, Threshold: {threshold:.2f}")
+    if selected_features:
+        print(f"Selected features: {selected_features}")
 
     if args.csv_path:
         csv_path = Path(args.csv_path)
         if not csv_path.is_absolute():
             csv_path = ROOT / csv_path
 
-        df = score_csv(csv_path, model, threshold, emb_lookup, model_type)
+        df = score_csv(csv_path, model, threshold, emb_lookup, model_type, selected_features)
 
         output_path = args.output or str(csv_path).replace(".csv", "_scored.csv")
         df.to_csv(output_path, index=False)
@@ -159,7 +177,7 @@ def main() -> None:
         print(f"Saved to {output_path}")
 
     if args.unlabelled:
-        candidates = score_unlabelled(model, threshold, emb_lookup, model_type)
+        candidates = score_unlabelled(model, threshold, emb_lookup, model_type, selected_features)
         if candidates:
             print(f"\n── Top 20 pairs to label next (uncertainty sampling) ──")
             for i, c in enumerate(candidates[:20], 1):
