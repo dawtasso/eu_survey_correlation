@@ -24,9 +24,12 @@ load_dotenv()
 from eu_survey_correlation.classifier import (
     DATA,
     OUTPUT_DIR,
+    SETFIT_MODEL_DIR,
     build_feature_matrix,
     compute_cross_encoder_scores,
     load_embedding_lookup,
+    load_setfit,
+    predict_setfit,
 )
 from eu_survey_correlation.logging import (
     console,
@@ -85,19 +88,13 @@ def fetch_all_supabase_matches(supabase) -> list[dict]:
 def load_model_and_config() -> tuple:
     import joblib
 
-    model_path = OUTPUT_DIR / "model.joblib"
     threshold_path = OUTPUT_DIR / "threshold.json"
-
-    if not model_path.exists():
-        raise FileNotFoundError(
-            f"No trained model at {model_path}. Run train_classifier.py first."
-        )
-
-    model = joblib.load(model_path)
+    setfit_threshold_path = SETFIT_MODEL_DIR / "threshold.json"
 
     model_type = "lr"
     threshold = 0.5
     selected_features = None
+
     if threshold_path.exists():
         with open(threshold_path) as f:
             meta = json.load(f)
@@ -105,6 +102,24 @@ def load_model_and_config() -> tuple:
             model_type = meta.get("model_type", "lr")
             selected_features = meta.get("selected_features")
 
+    if model_type == "setfit":
+        if not SETFIT_MODEL_DIR.exists():
+            raise FileNotFoundError(
+                f"threshold.json says model_type=setfit but {SETFIT_MODEL_DIR} not found."
+            )
+        model = load_setfit()
+        if setfit_threshold_path.exists():
+            with open(setfit_threshold_path) as f:
+                sf_meta = json.load(f)
+                threshold = sf_meta["threshold"]
+        return model, threshold, "setfit", None
+
+    model_path = OUTPUT_DIR / "model.joblib"
+    if not model_path.exists():
+        raise FileNotFoundError(
+            f"No trained model at {model_path}. Run train_classifier.py first."
+        )
+    model = joblib.load(model_path)
     return model, threshold, model_type, selected_features
 
 
@@ -125,6 +140,9 @@ def score_records(
     selected_features: list[str] | None = None,
     cache_name: str = "cross_encoder_scores_supabase.npy",
 ) -> np.ndarray:
+    if model_type == "setfit":
+        return predict_setfit(model, records)
+
     feature_df = build_feature_matrix(records, emb_lookup)
     feature_names = list(feature_df.columns)
     X = feature_df.values.astype(np.float64)

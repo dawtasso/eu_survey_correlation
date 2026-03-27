@@ -19,6 +19,14 @@ from .cross_encoder import (
 from .data import load_embedding_lookup, load_labelled_data
 from .features import ALL_FEATURE_NAMES, build_feature_matrix, compute_features
 from .reporting import generate_report
+from .setfit_model import (
+    SETFIT_MODEL_DIR,
+    load_setfit,
+    predict_setfit,
+    save_setfit,
+    train_setfit_eval,
+    train_setfit_final,
+)
 from .training import (
     evaluate_cv,
     find_best_threshold,
@@ -57,4 +65,11 @@ __all__ = [
     "score_single_pair_cross_encoder",
     # reporting
     "generate_report",
+    # setfit
+    "SETFIT_MODEL_DIR",
+    "train_setfit_eval",
+    "train_setfit_final",
+    "predict_setfit",
+    "save_setfit",
+    "load_setfit",
 ]

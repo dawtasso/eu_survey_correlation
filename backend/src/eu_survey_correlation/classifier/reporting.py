@@ -242,6 +242,7 @@ def generate_report(
     n_refused: int,
     feature_df: pd.DataFrame,
     unlabelled: list[dict] | None = None,
+    setfit_results: dict | None = None,
 ) -> None:
     """Generate figures and report.md."""
     _apply_style()
@@ -339,6 +340,21 @@ def generate_report(
             q = str(c.get("question_clean", ""))[:60]
             v = str(c.get("vote_summary_clean", ""))[:60]
             report += f"| {i} | {q} | {v} | {c['predicted_probability']:.3f} |\n"
+
+    if setfit_results:
+        sf_cv = setfit_results["cv_metrics"]
+        sf_threshold = setfit_results["calibrated_threshold"]
+        report += f"""
+## SetFit Comparison
+
+| Metric | Optuna ({model_type}) | SetFit |
+|--------|----------------------|--------|
+| F1 | {cv['f1']['mean']:.3f} +/- {cv['f1']['std']:.3f} | {sf_cv['f1']['mean']:.3f} +/- {sf_cv['f1']['std']:.3f} |
+| Precision | {cv['precision']['mean']:.3f} +/- {cv['precision']['std']:.3f} | {sf_cv['precision']['mean']:.3f} +/- {sf_cv['precision']['std']:.3f} |
+| Recall | {cv['recall']['mean']:.3f} +/- {cv['recall']['std']:.3f} | {sf_cv['recall']['mean']:.3f} +/- {sf_cv['recall']['std']:.3f} |
+| PR-AUC | {cv['pr_auc']['mean']:.3f} +/- {cv['pr_auc']['std']:.3f} | {sf_cv['pr_auc']['mean']:.3f} +/- {sf_cv['pr_auc']['std']:.3f} |
+| Threshold | {threshold:.2f} | {sf_threshold:.2f} |
+"""
 
     report += """
 ## Recommendations

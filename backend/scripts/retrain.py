@@ -24,7 +24,11 @@ from eu_survey_correlation.classifier import (
     generate_report,
     load_embedding_lookup,
     load_labelled_data,
+    predict_setfit,
+    save_setfit,
     train_final_model,
+    train_setfit_eval,
+    train_setfit_final,
 )
 from eu_survey_correlation.classifier.optuna_search import (
     _make_estimator_factory,
@@ -56,6 +60,12 @@ def main() -> None:
     )
     parser.add_argument(
         "--use-cross-encoder", action="store_true", help="Include cross-encoder scores"
+    )
+    parser.add_argument(
+        "--setfit", action="store_true", help="Also train a SetFit classifier"
+    )
+    parser.add_argument(
+        "--kfold", action="store_true", help="Use full k-fold CV for SetFit (slow)"
     )
     args = parser.parse_args()
 
@@ -259,7 +269,57 @@ def main() -> None:
             extra={"markup": True},
         )
 
-    # 10. Generate report
+    # 10. SetFit (optional, before report so results are included)
+    setfit_results = None
+    if args.setfit:
+        print_section("SetFit classifier")
+
+        mode = "k-fold (5x3)" if args.kfold else "single split (80/20)"
+        log.info(f"Evaluating SetFit — {mode}...")
+        setfit_cv = train_setfit_eval(labelled, kfold=args.kfold)
+        print_metrics(setfit_cv["cv_metrics"])
+        print_kv("SetFit threshold", f"{setfit_cv['calibrated_threshold']:.2f}")
+
+        # Compare with LR
+        lr_f1 = cv_results["cv_metrics"]["f1"]["mean"]
+        sf_f1 = setfit_cv["cv_metrics"]["f1"]["mean"]
+        delta = sf_f1 - lr_f1
+        sign = "+" if delta >= 0 else ""
+        log.info(
+            f"LR F1={lr_f1:.3f}  vs  SetFit F1={sf_f1:.3f}  ({sign}{delta:.3f})",
+        )
+
+        log.info("Training final SetFit model on all data...")
+        setfit_model = train_setfit_final(labelled)
+        setfit_path = save_setfit(setfit_model)
+        log.info(
+            f"SetFit model saved to [bold]{setfit_path}[/]",
+            extra={"markup": True},
+        )
+
+        # Save setfit threshold
+        setfit_threshold_meta = {
+            "threshold": setfit_cv["calibrated_threshold"],
+            "model_type": "setfit",
+            "cv_metrics": setfit_cv["cv_metrics"],
+        }
+        setfit_threshold_path = setfit_path / "threshold.json"
+        with open(setfit_threshold_path, "w") as f:
+            json.dump(setfit_threshold_meta, f, indent=2)
+
+        setfit_results = setfit_cv
+
+        # Score unlabelled with SetFit
+        if unlabelled:
+            sf_probs = predict_setfit(setfit_model, unlabelled)
+            sf_threshold = setfit_cv["calibrated_threshold"]
+            n_sf_accept = int((sf_probs >= sf_threshold).sum())
+            log.info(
+                f"SetFit: {n_sf_accept}/{len(unlabelled)} predicted accepted "
+                f"(threshold={sf_threshold:.2f})"
+            )
+
+    # 11. Generate report
     print_section("Report")
     generate_report(
         final_results,
@@ -270,6 +330,7 @@ def main() -> None:
         n_refused=len(refused),
         feature_df=feature_df,
         unlabelled=unlabelled_scored,
+        setfit_results=setfit_results,
     )
 
     console.print("\n[bold green]Done![/]")

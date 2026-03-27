@@ -19,9 +19,12 @@ from eu_survey_correlation.classifier import (
     DATA,
     MIGRATION_DIR,
     OUTPUT_DIR,
+    SETFIT_MODEL_DIR,
     build_feature_matrix,
     compute_cross_encoder_scores,
     load_embedding_lookup,
+    load_setfit,
+    predict_setfit,
 )
 from eu_survey_correlation.logging import (
     console,
@@ -35,26 +38,41 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def load_model() -> tuple[object, float, str, list[str] | None]:
-    model_path = OUTPUT_DIR / "model.joblib"
-    threshold_path = OUTPUT_DIR / "threshold.json"
+    # Check for SetFit model first (if its threshold.json says model_type=setfit)
+    setfit_threshold_path = SETFIT_MODEL_DIR / "threshold.json"
+    main_threshold_path = OUTPUT_DIR / "threshold.json"
 
-    if not model_path.exists():
-        raise FileNotFoundError(
-            f"No trained model at {model_path}. Run train_classifier.py first."
-        )
-
-    model = joblib.load(model_path)
-
-    threshold = 0.5
+    # Use main threshold.json to determine model type
     model_type = "lr"
+    threshold = 0.5
     selected_features = None
-    if threshold_path.exists():
-        with open(threshold_path) as f:
+
+    if main_threshold_path.exists():
+        with open(main_threshold_path) as f:
             meta = json.load(f)
             threshold = meta["threshold"]
             model_type = meta.get("model_type", "lr")
             selected_features = meta.get("selected_features")
 
+    if model_type == "setfit":
+        if not SETFIT_MODEL_DIR.exists():
+            raise FileNotFoundError(
+                f"threshold.json says model_type=setfit but {SETFIT_MODEL_DIR} not found."
+            )
+        model = load_setfit()
+        # Use setfit-specific threshold if available
+        if setfit_threshold_path.exists():
+            with open(setfit_threshold_path) as f:
+                sf_meta = json.load(f)
+                threshold = sf_meta["threshold"]
+        return model, threshold, "setfit", None
+
+    model_path = OUTPUT_DIR / "model.joblib"
+    if not model_path.exists():
+        raise FileNotFoundError(
+            f"No trained model at {model_path}. Run train_classifier.py first."
+        )
+    model = joblib.load(model_path)
     return model, threshold, model_type, selected_features
 
 
@@ -100,17 +118,20 @@ def score_csv(
             }
         )
 
-    feature_df = build_feature_matrix(records, emb_lookup)
-    feature_names = list(feature_df.columns)
-    X = feature_df.values.astype(np.float64)
-    X = np.nan_to_num(X, nan=0.0)
+    if model_type == "setfit":
+        probs = predict_setfit(model, records)
+    else:
+        feature_df = build_feature_matrix(records, emb_lookup)
+        feature_names = list(feature_df.columns)
+        X = feature_df.values.astype(np.float64)
+        X = np.nan_to_num(X, nan=0.0)
 
-    if model_type == "hybrid":
-        X = _append_ce_scores(X, records, "cross_encoder_scores_csv.npy")
+        if model_type == "hybrid":
+            X = _append_ce_scores(X, records, "cross_encoder_scores_csv.npy")
 
-    X = _select_features(X, feature_names, selected_features)
+        X = _select_features(X, feature_names, selected_features)
+        probs = model.predict_proba(X)[:, 1]
 
-    probs = model.predict_proba(X)[:, 1]
     df["predicted_quality"] = probs
     df["predicted_accepted"] = probs >= threshold
 
@@ -136,17 +157,19 @@ def score_unlabelled(
         log.info("No unlabelled pairs found.")
         return []
 
-    feature_df = build_feature_matrix(unlabelled, emb_lookup)
-    feature_names = list(feature_df.columns)
-    X = feature_df.values.astype(np.float64)
-    X = np.nan_to_num(X, nan=0.0)
+    if model_type == "setfit":
+        probs = predict_setfit(model, unlabelled)
+    else:
+        feature_df = build_feature_matrix(unlabelled, emb_lookup)
+        feature_names = list(feature_df.columns)
+        X = feature_df.values.astype(np.float64)
+        X = np.nan_to_num(X, nan=0.0)
 
-    if model_type == "hybrid":
-        X = _append_ce_scores(X, unlabelled, "cross_encoder_scores_unlabelled.npy")
+        if model_type == "hybrid":
+            X = _append_ce_scores(X, unlabelled, "cross_encoder_scores_unlabelled.npy")
 
-    X = _select_features(X, feature_names, selected_features)
-
-    probs = model.predict_proba(X)[:, 1]
+        X = _select_features(X, feature_names, selected_features)
+        probs = model.predict_proba(X)[:, 1]
 
     for r, p in zip(unlabelled, probs):
         r["predicted_probability"] = float(p)
