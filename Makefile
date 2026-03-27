@@ -1,4 +1,4 @@
-.PHONY: retrain generate-candidates add-candidates push-predictions score test
+.PHONY: retrain generate-candidates add-candidates push-predictions score test label sync
 
 # ── Training ──────────────────────────────────────────────────────────
 retrain: ## Retrain classifier with Optuna HPO (TRIALS=100)
@@ -29,6 +29,13 @@ score: ## Score a CSV file (CSV=path/to/file.csv)
 
 score-unlabelled: ## Score unlabelled pairs from backup
 	uv run python backend/scripts/score_matches.py --unlabelled
+
+# ── Labelling ────────────────────────────────────────────────────────
+label: ## Label pairs interactively in terminal (LIMIT=20)
+	uv run python backend/scripts/label_from_terminal.py --limit $(or $(LIMIT),20)
+
+sync: ## Pull fresh Supabase backup to data/migration/
+	uv run python backend/scripts/label_from_terminal.py --sync-only
 
 # ── Tests ─────────────────────────────────────────────────────────────
 test: ## Run all tests

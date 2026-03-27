@@ -1,16 +1,10 @@
 """
 Push classifier predictions to Supabase for frontend display.
 
-1. Scores ALL existing matches in Supabase with the trained model
-2. Updates predicted_probability column (NEVER touches admin_validated)
-3. Finds new candidate pairs from CSV and inserts them
-
 Usage:
-    uv run python backend/scripts/push_predictions_to_supabase.py                 # update existing only
-    uv run python backend/scripts/push_predictions_to_supabase.py --insert-new    # also insert new candidates
-    uv run python backend/scripts/push_predictions_to_supabase.py --insert-new --csv data/matches/all_candidates.csv
-    uv run python backend/scripts/push_predictions_to_supabase.py --insert-new --active-learning --limit 50
-    uv run python backend/scripts/push_predictions_to_supabase.py --dry-run       # preview without writing
+    make push-predictions                              # update existing only
+    make add-candidates LIMIT=10                       # push 10 most uncertain
+    make add-candidates-dry LIMIT=10                   # preview without writing
 """
 
 from __future__ import annotations
@@ -18,12 +12,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 from dotenv import load_dotenv
-from loguru import logger
 
 load_dotenv()
 
@@ -34,19 +28,31 @@ from eu_survey_correlation.classifier import (
     compute_cross_encoder_scores,
     load_embedding_lookup,
 )
-
-import sys
+from eu_survey_correlation.logging import (
+    console,
+    log,
+    print_candidates_table,
+    print_kv,
+    print_match,
+    print_section,
+)
 
 sys.path.insert(0, str(Path(__file__).parent))
-from match_id_utils import build_main_vote_map, build_vote_to_procedure_map, make_match_id, make_match_key
+from match_id_utils import (
+    build_main_vote_map,
+    build_vote_to_procedure_map,
+    make_match_id,
+    make_match_key,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 VOTES_CSV = ROOT / "data" / "votes" / "votes.csv"
 DEFAULT_CANDIDATES_CSV = ROOT / "data" / "matches" / "all_candidates.csv"
-LEGACY_MATCHES_CSV = ROOT / "data" / "matches" / "simplified_michlou_survey_vote_matches_clean.csv"
+LEGACY_MATCHES_CSV = (
+    ROOT / "data" / "matches" / "simplified_michlou_survey_vote_matches_clean.csv"
+)
 BATCH_SIZE = 100
 
-# Minimum predicted probability to insert a new candidate pair
 NEW_CANDIDATE_THRESHOLD = 0.4
 
 
@@ -59,7 +65,6 @@ def get_supabase():
 
 
 def fetch_all_supabase_matches(supabase) -> list[dict]:
-    """Fetch all rows from survey_vote_matches (handles pagination)."""
     rows = []
     page_size = 1000
     offset = 0
@@ -78,7 +83,6 @@ def fetch_all_supabase_matches(supabase) -> list[dict]:
 
 
 def load_model_and_config() -> tuple:
-    """Load trained model, threshold, model type, and selected features."""
     import joblib
 
     model_path = OUTPUT_DIR / "model.joblib"
@@ -104,8 +108,9 @@ def load_model_and_config() -> tuple:
     return model, threshold, model_type, selected_features
 
 
-def _select_features(X: np.ndarray, feature_names: list[str], selected: list[str] | None) -> np.ndarray:
-    """Slice feature matrix to selected features if specified."""
+def _select_features(
+    X: np.ndarray, feature_names: list[str], selected: list[str] | None
+) -> np.ndarray:
     if selected is None:
         return X
     indices = [feature_names.index(f) for f in selected if f in feature_names]
@@ -120,7 +125,6 @@ def score_records(
     selected_features: list[str] | None = None,
     cache_name: str = "cross_encoder_scores_supabase.npy",
 ) -> np.ndarray:
-    """Score a list of records and return predicted probabilities."""
     feature_df = build_feature_matrix(records, emb_lookup)
     feature_names = list(feature_df.columns)
     X = feature_df.values.astype(np.float64)
@@ -138,42 +142,60 @@ def score_records(
 
 # ── Step 1: Update existing Supabase matches ─────────────────────────
 def update_existing_matches(supabase, dry_run: bool = False) -> int:
-    """Score all existing matches and update predicted_probability."""
-    logger.info("Fetching existing matches from Supabase...")
+    log.info("Fetching existing matches from Supabase...")
     rows = fetch_all_supabase_matches(supabase)
     if not rows:
-        logger.warning("No matches found in Supabase")
+        log.warning("No matches found in Supabase")
         return 0
 
-    logger.info(f"Found {len(rows)} existing matches")
+    log.info(f"Found [bold]{len(rows)}[/] existing matches", extra={"markup": True})
 
     model, threshold, model_type, selected_features = load_model_and_config()
     emb_lookup = load_embedding_lookup()
-    logger.info(f"Model type: {model_type}, threshold: {threshold:.2f}")
+    print_kv("Model", model_type)
+    print_kv("Threshold", f"{threshold:.2f}")
 
-    # Prepare records for scoring (map Supabase column names)
     records = []
     for r in rows:
-        records.append({
-            "question_clean": r.get("question_clean") or "",
-            "vote_summary_clean": r.get("vote_summary_clean") or "",
-            "similarity_score": r.get("similarity_score") or 0,
-            "days_between": r.get("days_between") or 0,
-        })
+        records.append(
+            {
+                "question_clean": r.get("question_clean") or "",
+                "vote_summary_clean": r.get("vote_summary_clean") or "",
+                "similarity_score": r.get("similarity_score") or 0,
+                "days_between": r.get("days_between") or 0,
+            }
+        )
 
-    probs = score_records(records, model, model_type, emb_lookup, selected_features, "cross_encoder_scores_supabase.npy")
+    probs = score_records(
+        records,
+        model,
+        model_type,
+        emb_lookup,
+        selected_features,
+        "cross_encoder_scores_supabase.npy",
+    )
 
-    logger.info(f"Score distribution: mean={probs.mean():.3f}, std={probs.std():.3f}")
-    logger.info(f"Predicted accepted (>={threshold:.2f}): {(probs >= threshold).sum()}/{len(probs)}")
+    n_accept = int((probs >= threshold).sum())
+    print_kv("Score distribution", f"mean={probs.mean():.3f}  std={probs.std():.3f}")
+    print_kv("Predicted accepted", f"{n_accept}/{len(probs)}")
 
     if dry_run:
-        logger.info("[DRY RUN] Would update predicted_probability for all existing matches")
+        log.info(
+            "[bold yellow]DRY RUN[/] — would update all existing matches",
+            extra={"markup": True},
+        )
         for i, (r, p) in enumerate(zip(rows, probs)):
-            if i < 5:
-                logger.info(f"  {r['match_id']}: {p:.4f} {'[ACCEPT]' if p >= threshold else '[REFUSE]'}")
+            if i < 3:
+                decision = "ACCEPT" if p >= threshold else "REFUSE"
+                print_match(
+                    r["match_id"][:8],
+                    r.get("question_clean", ""),
+                    r.get("vote_summary_clean", ""),
+                    probability=p,
+                    threshold=threshold,
+                )
         return len(rows)
 
-    # Batch update — only update predicted_probability, never touch admin_validated
     updated = 0
     for start in range(0, len(rows), BATCH_SIZE):
         batch = rows[start : start + BATCH_SIZE]
@@ -185,9 +207,12 @@ def update_existing_matches(supabase, dry_run: bool = False) -> int:
             ).eq("match_id", row["match_id"]).execute()
             updated += 1
 
-        logger.info(f"  Updated {updated}/{len(rows)} matches")
+        log.info(f"Updated {updated}/{len(rows)} matches")
 
-    logger.info(f"Updated predicted_probability for {updated} existing matches")
+    log.info(
+        f"Updated predicted_probability for [bold]{updated}[/] matches",
+        extra={"markup": True},
+    )
     return updated
 
 
@@ -200,29 +225,28 @@ def insert_new_candidates(
     active_learning: bool = False,
     limit: int | None = None,
 ) -> int:
-    """Find CSV pairs not in Supabase, score them, insert high-probability ones."""
     if not csv_path.exists():
-        logger.warning(f"Candidates CSV not found: {csv_path}")
+        log.warning(f"Candidates CSV not found: {csv_path}")
         return 0
 
     if not VOTES_CSV.exists():
-        logger.warning(f"Votes CSV not found: {VOTES_CSV}")
+        log.warning(f"Votes CSV not found: {VOTES_CSV}")
         return 0
 
-    # Load vote_id → procedure_reference mapping (all votes, for resolution)
     vote_to_proc = build_vote_to_procedure_map(VOTES_CSV)
-    # Also load main vote_ids to filter: only main votes have the correct summary
     main_vote_ids = set(build_main_vote_map(VOTES_CSV).values())
-    logger.info(f"Loaded {len(vote_to_proc)} vote->procedure mappings ({len(main_vote_ids)} main votes)")
+    log.info(
+        f"Loaded {len(vote_to_proc)} vote->procedure mappings ({len(main_vote_ids)} main)"
+    )
 
-    # Load existing match_ids from Supabase
     existing_rows = fetch_all_supabase_matches(supabase)
     existing_ids = {r["match_id"] for r in existing_rows}
-    logger.info(f"Existing Supabase match_ids: {len(existing_ids)}")
+    log.info(f"Existing Supabase match_ids: {len(existing_ids)}")
 
-    # Parse CSV and find new candidates
     df = pd.read_csv(csv_path)
-    logger.info(f"Loaded {len(df)} rows from {csv_path.name}")
+    log.info(
+        f"Loaded [bold]{len(df)}[/] rows from {csv_path.name}", extra={"markup": True}
+    )
 
     new_candidates = []
     skipped_no_proc = 0
@@ -231,17 +255,14 @@ def insert_new_candidates(
         question_id = str(row.get("sheet_id", row.get("question_id", ""))).strip()
         survey_file = str(row.get("file_name", row.get("survey_file", ""))).strip()
 
-        # Handle vote_id → procedure_reference resolution
         vote_id = None
         procedure_reference = None
 
         if pd.notna(row.get("vote_id")):
             vote_id = int(float(row["vote_id"]))
-            # Only accept main votes (non-main votes don't have the right summary)
             if vote_id in vote_to_proc and vote_id in main_vote_ids:
                 procedure_reference = vote_to_proc[vote_id]
 
-        # If CSV already has procedure_reference (e.g. from generate_candidates.py)
         if procedure_reference is None and pd.notna(row.get("procedure_reference")):
             procedure_reference = str(row["procedure_reference"]).strip()
 
@@ -252,78 +273,108 @@ def insert_new_candidates(
         match_id = make_match_id(question_id, survey_file, procedure_reference)
 
         if match_id in existing_ids:
-            continue  # Already in Supabase
+            continue
 
-        # Handle column name variations between CSV sources
         vote_summary_clean = str(
-            row.get("summary_clean", row.get("vote_summary_clean", row.get("simplified_summary", "")))
+            row.get(
+                "summary_clean",
+                row.get("vote_summary_clean", row.get("simplified_summary", "")),
+            )
         ).strip()
 
-        new_candidates.append({
-            "match_id": match_id,
-            "match_key": make_match_key(question_id, survey_file, procedure_reference),
-            "question_id": question_id,
-            "question_clean": str(row.get("question_clean", "")).strip(),
-            "question_original": str(row.get("question_en", row.get("question_original", ""))).strip(),
-            "survey_file": survey_file,
-            "survey_date": str(row.get("survey_date", "")).strip() or None,
-            "vote_id": vote_id,
-            "procedure_reference": procedure_reference,
-            "vote_summary_original": str(row.get("summary", row.get("vote_summary_original", ""))).strip(),
-            "vote_summary_clean": vote_summary_clean,
-            "vote_date": str(row.get("vote_date", "")).strip() or None,
-            "days_between": int(float(row["time_delta"])) if pd.notna(row.get("time_delta")) else
-                            int(float(row["days_between"])) if pd.notna(row.get("days_between")) else None,
-            "similarity_score": float(row["similarity_score"]) if pd.notna(row.get("similarity_score")) else None,
-            "source": str(row.get("source", "Eurobarometer")),
-            "admin_validated": None,  # Always null for new candidates
-        })
+        new_candidates.append(
+            {
+                "match_id": match_id,
+                "match_key": make_match_key(
+                    question_id, survey_file, procedure_reference
+                ),
+                "question_id": question_id,
+                "question_clean": str(row.get("question_clean", "")).strip(),
+                "question_original": str(
+                    row.get("question_en", row.get("question_original", ""))
+                ).strip(),
+                "survey_file": survey_file,
+                "survey_date": str(row.get("survey_date", "")).strip() or None,
+                "vote_id": vote_id,
+                "procedure_reference": procedure_reference,
+                "vote_summary_original": str(
+                    row.get("summary", row.get("vote_summary_original", ""))
+                ).strip(),
+                "vote_summary_clean": vote_summary_clean,
+                "vote_date": str(row.get("vote_date", "")).strip() or None,
+                "days_between": (
+                    int(float(row["time_delta"]))
+                    if pd.notna(row.get("time_delta"))
+                    else (
+                        int(float(row["days_between"]))
+                        if pd.notna(row.get("days_between"))
+                        else None
+                    )
+                ),
+                "similarity_score": (
+                    float(row["similarity_score"])
+                    if pd.notna(row.get("similarity_score"))
+                    else None
+                ),
+                "source": str(row.get("source", "Eurobarometer")),
+                "admin_validated": None,
+            }
+        )
 
     if skipped_no_proc:
-        logger.info(f"Skipped {skipped_no_proc} CSV rows without procedure_reference mapping")
+        log.info(f"Skipped {skipped_no_proc} rows without procedure_reference")
 
     if not new_candidates:
-        logger.info("No new candidates to insert")
+        log.info("No new candidates to insert")
         return 0
 
-    logger.info(f"Found {len(new_candidates)} new candidate pairs not in Supabase")
+    log.info(
+        f"Found [bold]{len(new_candidates)}[/] new candidate pairs",
+        extra={"markup": True},
+    )
 
-    # Score the new candidates
+    # Score
     model, threshold, model_type, selected_features = load_model_and_config()
     emb_lookup = load_embedding_lookup()
 
     score_records_input = []
     for c in new_candidates:
-        score_records_input.append({
-            "question_clean": c["question_clean"],
-            "vote_summary_clean": c["vote_summary_clean"],
-            "similarity_score": c["similarity_score"] or 0,
-            "days_between": c["days_between"] or 0,
-        })
+        score_records_input.append(
+            {
+                "question_clean": c["question_clean"],
+                "vote_summary_clean": c["vote_summary_clean"],
+                "similarity_score": c["similarity_score"] or 0,
+                "days_between": c["days_between"] or 0,
+            }
+        )
 
     probs = score_records(
-        score_records_input, model, model_type, emb_lookup, selected_features,
+        score_records_input,
+        model,
+        model_type,
+        emb_lookup,
+        selected_features,
         "cross_encoder_scores_new_candidates.npy",
     )
 
-    # Add predicted_probability to each candidate
     for c, p in zip(new_candidates, probs):
         c["predicted_probability"] = round(float(p), 4)
 
     if active_learning:
-        # Sort by uncertainty (closest to decision boundary = most informative)
         new_candidates.sort(key=lambda c: abs(c["predicted_probability"] - threshold))
         if limit:
             new_candidates = new_candidates[:limit]
-        logger.info(
-            f"Active learning mode: selected {len(new_candidates)} pairs "
-            f"closest to threshold {threshold:.2f}"
+        log.info(
+            f"Active learning: selected [bold]{len(new_candidates)}[/] pairs closest to threshold {threshold:.2f}",
+            extra={"markup": True},
         )
     else:
-        # Filter to high-probability candidates only
-        new_candidates = [c for c in new_candidates if c["predicted_probability"] >= min_threshold]
-        logger.info(
-            f"Filtered to {len(new_candidates)} candidates with P >= {min_threshold}"
+        new_candidates = [
+            c for c in new_candidates if c["predicted_probability"] >= min_threshold
+        ]
+        log.info(
+            f"Filtered to [bold]{len(new_candidates)}[/] candidates with P >= {min_threshold}",
+            extra={"markup": True},
         )
         if limit:
             new_candidates.sort(key=lambda c: c["predicted_probability"], reverse=True)
@@ -332,17 +383,28 @@ def insert_new_candidates(
     if not new_candidates:
         return 0
 
+    # Show preview
+    print_candidates_table(
+        new_candidates, threshold=threshold, max_rows=min(3, len(new_candidates))
+    )
+
     if dry_run:
-        logger.info("[DRY RUN] Would insert new candidates:")
-        for c in sorted(new_candidates, key=lambda x: x["predicted_probability"], reverse=True)[:10]:
-            logger.info(
-                f"  P={c['predicted_probability']:.3f} | "
-                f"Q: {c['question_clean'][:60]}... | "
-                f"V: {c['vote_summary_clean'][:60]}..."
+        log.info(
+            f"[bold yellow]DRY RUN[/] — would insert {len(new_candidates)} candidates",
+            extra={"markup": True},
+        )
+        # Show a few full-text comparisons
+        for c in new_candidates[:3]:
+            print_match(
+                c["match_id"][:8],
+                c["question_clean"],
+                c["vote_summary_clean"],
+                score=c.get("similarity_score"),
+                probability=c["predicted_probability"],
+                threshold=threshold,
             )
         return len(new_candidates)
 
-    # Batch upsert — NEVER overwrite existing admin_validated
     inserted = 0
     for start in range(0, len(new_candidates), BATCH_SIZE):
         batch = new_candidates[start : start + BATCH_SIZE]
@@ -350,52 +412,72 @@ def insert_new_candidates(
             batch, on_conflict="match_id"
         ).execute()
         inserted += len(batch)
-        logger.info(f"  Inserted {inserted}/{len(new_candidates)} new candidates")
+        log.info(f"Inserted {inserted}/{len(new_candidates)} candidates")
 
-    logger.info(f"Inserted {inserted} new candidate pairs")
+    log.info(
+        f"Inserted [bold green]{inserted}[/] new candidate pairs",
+        extra={"markup": True},
+    )
     return inserted
 
 
 # ── Main ──────────────────────────────────────────────────────────────
 def main() -> None:
     parser = argparse.ArgumentParser(description="Push predictions to Supabase")
-    parser.add_argument("--insert-new", action="store_true",
-                        help="Also insert new candidate pairs from CSV")
-    parser.add_argument("--csv", type=str, default=None,
-                        help=f"CSV file with candidates (default: {DEFAULT_CANDIDATES_CSV.relative_to(ROOT)})")
-    parser.add_argument("--active-learning", action="store_true",
-                        help="Insert pairs nearest to decision boundary (most informative for labelling)")
-    parser.add_argument("--limit", type=int, default=None,
-                        help="Maximum number of new candidates to insert")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="Preview without writing to Supabase")
-    parser.add_argument("--threshold", type=float, default=NEW_CANDIDATE_THRESHOLD,
-                        help=f"Min predicted probability for new candidates (default: {NEW_CANDIDATE_THRESHOLD})")
+    parser.add_argument(
+        "--insert-new",
+        action="store_true",
+        help="Also insert new candidate pairs from CSV",
+    )
+    parser.add_argument(
+        "--csv",
+        type=str,
+        default=None,
+        help=f"CSV file with candidates (default: {DEFAULT_CANDIDATES_CSV.relative_to(ROOT)})",
+    )
+    parser.add_argument(
+        "--active-learning",
+        action="store_true",
+        help="Insert pairs nearest to decision boundary",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Maximum number of new candidates to insert",
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Preview without writing to Supabase"
+    )
+    parser.add_argument(
+        "--threshold",
+        type=float,
+        default=NEW_CANDIDATE_THRESHOLD,
+        help=f"Min predicted probability for new candidates (default: {NEW_CANDIDATE_THRESHOLD})",
+    )
     args = parser.parse_args()
 
-    # Resolve CSV path
     if args.csv:
         csv_path = Path(args.csv)
         if not csv_path.is_absolute():
             csv_path = ROOT / csv_path
     else:
-        csv_path = DEFAULT_CANDIDATES_CSV if DEFAULT_CANDIDATES_CSV.exists() else LEGACY_MATCHES_CSV
+        csv_path = (
+            DEFAULT_CANDIDATES_CSV
+            if DEFAULT_CANDIDATES_CSV.exists()
+            else LEGACY_MATCHES_CSV
+        )
 
     supabase = get_supabase()
 
-    # Step 1: Update existing matches
-    logger.info("=" * 60)
-    logger.info("Step 1: Scoring existing Supabase matches")
-    logger.info("=" * 60)
+    # Step 1: Update existing
+    print_section("Scoring existing Supabase matches")
     n_updated = update_existing_matches(supabase, dry_run=args.dry_run)
 
-    # Step 2: Insert new candidates (optional)
+    # Step 2: Insert new
     if args.insert_new:
-        logger.info("")
-        logger.info("=" * 60)
-        logger.info("Step 2: Inserting new candidate pairs")
-        logger.info("=" * 60)
-        logger.info(f"Source CSV: {csv_path}")
+        print_section("Inserting new candidates")
+        print_kv("Source CSV", csv_path)
         n_inserted = insert_new_candidates(
             supabase,
             csv_path=csv_path,
@@ -406,17 +488,14 @@ def main() -> None:
         )
     else:
         n_inserted = 0
-        logger.info("\nSkipping new candidate insertion (use --insert-new to enable)")
+        log.info("Skipping insertion (use --insert-new to enable)")
 
     # Summary
-    logger.info("")
-    logger.info("=" * 60)
-    logger.info("Summary")
-    logger.info("=" * 60)
-    logger.info(f"  Updated: {n_updated} existing matches")
-    logger.info(f"  Inserted: {n_inserted} new candidates")
+    print_section("Summary")
+    print_kv("Updated", f"{n_updated} existing matches")
+    print_kv("Inserted", f"{n_inserted} new candidates")
     if args.dry_run:
-        logger.info("  [DRY RUN — no changes written to Supabase]")
+        console.print("  [bold yellow]DRY RUN — no changes written[/]")
 
 
 if __name__ == "__main__":
