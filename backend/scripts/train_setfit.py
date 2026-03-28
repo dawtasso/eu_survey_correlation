@@ -12,6 +12,7 @@ import json
 
 from eu_survey_correlation.classifier import (
     OUTPUT_DIR,
+    generate_setfit_report,
     load_labelled_data,
     predict_setfit,
     save_setfit,
@@ -64,6 +65,10 @@ def main() -> None:
     }
     with open(path / "threshold.json", "w") as f:
         json.dump(threshold_meta, f, indent=2)
+
+    # 5. Report + figures
+    print_section("Report")
+    generate_setfit_report(setfit_cv, n_accepted=len(accepted), n_refused=len(refused))
 
     console.print("\n[bold green]Done![/]")
 

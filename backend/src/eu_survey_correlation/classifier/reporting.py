@@ -82,7 +82,9 @@ def _plot_feature_importances(importances: dict[str, float], model_type: str = "
     plt.close(fig)
 
 
-def _plot_pr_curve(y_true: np.ndarray, y_prob: np.ndarray, threshold: float) -> None:
+def _plot_pr_curve(
+    y_true: np.ndarray, y_prob: np.ndarray, threshold: float, prefix: str = "",
+) -> None:
     """Figure 3: PR curve with operating point."""
     fig, ax = plt.subplots(figsize=(6.5, 5.5))
     PrecisionRecallDisplay.from_predictions(
@@ -99,11 +101,13 @@ def _plot_pr_curve(y_true: np.ndarray, y_prob: np.ndarray, threshold: float) -> 
     ax.set_title("Precision-Recall Curve")
     ax.legend(fontsize=9)
     fig.tight_layout()
-    fig.savefig(FIGURES_DIR / "precision_recall_curve.png", dpi=DPI)
+    fig.savefig(FIGURES_DIR / f"{prefix}precision_recall_curve.png", dpi=DPI)
     plt.close(fig)
 
 
-def _plot_confusion_matrix(y_true: np.ndarray, y_prob: np.ndarray, threshold: float) -> None:
+def _plot_confusion_matrix(
+    y_true: np.ndarray, y_prob: np.ndarray, threshold: float, prefix: str = "",
+) -> None:
     """Figure 4: Confusion matrix with row-normalized percentages."""
     y_pred_cal = (y_prob >= threshold).astype(int)
     cm = confusion_matrix(y_true, y_pred_cal)
@@ -117,11 +121,13 @@ def _plot_confusion_matrix(y_true: np.ndarray, y_prob: np.ndarray, threshold: fl
     axes[1].set_title("Row-Normalized (%)")
     fig.suptitle("Confusion Matrix", fontsize=FONT_TITLE, y=1.02)
     fig.tight_layout()
-    fig.savefig(FIGURES_DIR / "confusion_matrix.png", dpi=DPI, bbox_inches="tight")
+    fig.savefig(FIGURES_DIR / f"{prefix}confusion_matrix.png", dpi=DPI, bbox_inches="tight")
     plt.close(fig)
 
 
-def _plot_calibration(y_true: np.ndarray, y_prob: np.ndarray, threshold: float) -> None:
+def _plot_calibration(
+    y_true: np.ndarray, y_prob: np.ndarray, threshold: float, prefix: str = "",
+) -> None:
     """Figure 5: Calibration plot with histogram."""
     fig, (ax_cal, ax_hist) = plt.subplots(
         2, 1, figsize=(7, 7), gridspec_kw={"height_ratios": [3, 1]}, sharex=True,
@@ -139,11 +145,13 @@ def _plot_calibration(y_true: np.ndarray, y_prob: np.ndarray, threshold: float) 
     ax_hist.set_ylabel("Count")
     ax_hist.legend(fontsize=9)
     fig.tight_layout()
-    fig.savefig(FIGURES_DIR / "calibration_plot.png", dpi=DPI)
+    fig.savefig(FIGURES_DIR / f"{prefix}calibration_plot.png", dpi=DPI)
     plt.close(fig)
 
 
-def _plot_threshold_sensitivity(y_true: np.ndarray, y_prob: np.ndarray, threshold: float) -> None:
+def _plot_threshold_sensitivity(
+    y_true: np.ndarray, y_prob: np.ndarray, threshold: float, prefix: str = "",
+) -> None:
     """Figure 6: Threshold sensitivity."""
     thresholds_sweep = np.arange(0.10, 0.91, 0.01)
     f1s, precs, recs = [], [], []
@@ -170,7 +178,7 @@ def _plot_threshold_sensitivity(y_true: np.ndarray, y_prob: np.ndarray, threshol
     ax.set_xlim(0.1, 0.9)
     ax.set_ylim(0, 1.05)
     fig.tight_layout()
-    fig.savefig(FIGURES_DIR / "threshold_sensitivity.png", dpi=DPI)
+    fig.savefig(FIGURES_DIR / f"{prefix}threshold_sensitivity.png", dpi=DPI)
     plt.close(fig)
 
 
@@ -368,3 +376,68 @@ def generate_report(
     with open(OUTPUT_DIR / "report.md", "w") as f:
         f.write(report)
     print(f"Report saved to {OUTPUT_DIR / 'report.md'}")
+
+
+def generate_setfit_report(
+    eval_results: dict,
+    n_accepted: int,
+    n_refused: int,
+) -> None:
+    """Generate SetFit-specific figures and setfit_report.md.
+
+    Called by both `make setfit` and `make retrain-setfit` so the latest
+    run always produces the same artifacts.
+    """
+    _apply_style()
+    FIGURES_DIR.mkdir(parents=True, exist_ok=True)
+
+    cv = eval_results["cv_metrics"]
+    threshold = eval_results["calibrated_threshold"]
+    y_true = eval_results["all_y_true"]
+    y_prob = eval_results["all_y_prob"]
+
+    prefix = "setfit_"
+    _plot_pr_curve(y_true, y_prob, threshold, prefix=prefix)
+    _plot_confusion_matrix(y_true, y_prob, threshold, prefix=prefix)
+    _plot_calibration(y_true, y_prob, threshold, prefix=prefix)
+    _plot_threshold_sensitivity(y_true, y_prob, threshold, prefix=prefix)
+
+    report = f"""# SetFit Classifier — Report
+
+## Dataset Summary
+- **Total labelled pairs**: {n_accepted + n_refused}
+- **Accepted**: {n_accepted} ({100*n_accepted/(n_accepted+n_refused):.1f}%)
+- **Refused**: {n_refused} ({100*n_refused/(n_accepted+n_refused):.1f}%)
+- **Class ratio** (refused:accepted): {n_refused/max(n_accepted,1):.1f}:1
+
+## Model: SetFit (all-MiniLM-L6-v2)
+
+### Evaluation Results
+
+| Metric | Mean | Std |
+|--------|------|-----|
+| F1 | {cv['f1']['mean']:.3f} | {cv['f1']['std']:.3f} |
+| Precision | {cv['precision']['mean']:.3f} | {cv['precision']['std']:.3f} |
+| Recall | {cv['recall']['mean']:.3f} | {cv['recall']['std']:.3f} |
+| PR-AUC | {cv['pr_auc']['mean']:.3f} | {cv['pr_auc']['std']:.3f} |
+
+**Calibrated threshold**: {threshold:.2f}
+
+## Figures
+
+### Precision-Recall Curve
+![PR curve](figures/{prefix}precision_recall_curve.png)
+
+### Confusion Matrix
+![Confusion matrix](figures/{prefix}confusion_matrix.png)
+
+### Threshold Sensitivity
+![Threshold sensitivity](figures/{prefix}threshold_sensitivity.png)
+
+### Calibration Plot
+![Calibration](figures/{prefix}calibration_plot.png)
+"""
+
+    with open(OUTPUT_DIR / "setfit_report.md", "w") as f:
+        f.write(report)
+    print(f"SetFit report saved to {OUTPUT_DIR / 'setfit_report.md'}")

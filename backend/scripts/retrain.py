@@ -22,6 +22,7 @@ from eu_survey_correlation.classifier import (
     compute_cross_encoder_scores,
     evaluate_cv,
     generate_report,
+    generate_setfit_report,
     load_embedding_lookup,
     load_labelled_data,
     predict_setfit,
@@ -308,6 +309,9 @@ def main() -> None:
             json.dump(setfit_threshold_meta, f, indent=2)
 
         setfit_results = setfit_cv
+
+        # SetFit report + figures
+        generate_setfit_report(setfit_cv, n_accepted=len(accepted), n_refused=len(refused))
 
         # Score unlabelled with SetFit
         if unlabelled:

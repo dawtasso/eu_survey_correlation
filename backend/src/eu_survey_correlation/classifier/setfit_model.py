@@ -35,42 +35,9 @@ def _make_texts(records: list[dict]) -> list[str]:
     ]
 
 
-def _make_eval_callback(model_ref, eval_texts: list[str], eval_labels: list[int]):
-    """Create a callback that logs F1/precision/recall on the eval set each epoch."""
-    from transformers import TrainerCallback
-
-    y_true = np.array(eval_labels)
-
-    class EvalMetricsCallback(TrainerCallback):
-        def on_epoch_end(self, args, state, control, **kwargs):
-            probs = predict_setfit(model_ref, eval_texts)
-            threshold = find_best_threshold(y_true, probs)
-            y_pred = (probs >= threshold).astype(int)
-            metrics = {
-                "eval_f1": f1_score(y_true, y_pred, zero_division=0),
-                "eval_precision": precision_score(y_true, y_pred, zero_division=0),
-                "eval_recall": recall_score(y_true, y_pred, zero_division=0),
-                "eval_pr_auc": average_precision_score(y_true, probs),
-                "eval_threshold": threshold,
-            }
-            # Log to TensorBoard via the trainer's built-in logging
-            if state.log_history is not None:
-                state.log_history.append({**metrics, "epoch": state.epoch, "step": state.global_step})
-            # Write to TensorBoard directly
-            for cb in kwargs.get("callbacks", []) or []:
-                if hasattr(cb, "tb_writer"):
-                    for k, v in metrics.items():
-                        cb.tb_writer.add_scalar(k, v, state.global_step)
-                    cb.tb_writer.flush()
-
-    return EvalMetricsCallback()
-
-
 def _train_one(
     texts: list[str],
     labels: list[int],
-    eval_texts: list[str] | None = None,
-    eval_labels: list[int] | None = None,
 ) -> object:
     """Train a single SetFit model on given texts/labels."""
     from datasets import Dataset
@@ -84,21 +51,15 @@ def _train_one(
     training_args = TrainingArguments(
         num_epochs=2,
         batch_size=16,
-        num_iterations=5,
+        num_iterations=20,
         logging_dir=log_dir,
         run_name=run_name,
         report_to="tensorboard",
     )
-
-    callbacks = []
-    if eval_texts and eval_labels:
-        callbacks.append(_make_eval_callback(model, eval_texts, eval_labels))
-
     trainer = Trainer(
         model=model,
         args=training_args,
         train_dataset=train_ds,
-        callbacks=callbacks,
     )
     trainer.train()
     return model
@@ -160,9 +121,8 @@ def train_setfit_eval(
         train_texts = [texts[i] for i in train_idx]
         train_labels = y[train_idx].tolist()
         val_texts = [texts[i] for i in val_idx]
-        val_labels = y[val_idx].tolist()
 
-        model = _train_one(train_texts, train_labels, val_texts, val_labels)
+        model = _train_one(train_texts, train_labels)
         y_prob = predict_setfit(model, val_texts)
         metrics = _compute_fold_metrics(y[val_idx], y_prob)
 

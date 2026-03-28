@@ -8,7 +8,7 @@ retrain-quick: ## Retrain reusing cached Optuna study
 	uv run python backend/scripts/retrain.py --skip-optuna
 
 setfit: ## Train SetFit classifier (standalone, fast)
-	uv run python backend/scripts/train_setfit.py $(if $(KFOLD),--kfold)
+	caffeinate -i uv run python backend/scripts/train_setfit.py $(if $(KFOLD),--kfold)
 
 retrain-setfit: ## Train LR (cached) + SetFit
 	uv run python backend/scripts/retrain.py --setfit --skip-optuna
