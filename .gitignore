@@ -26,3 +26,12 @@ __pycache__/
 
 # ignore env
 .env
+
+# migration backups (contain Supabase data)
+data/migration/
+
+# classifier artifacts (trained models, figures)
+data/classifier/
+
+# training checkpoints (large binaries)
+checkpoints/
